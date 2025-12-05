@@ -3,10 +3,6 @@
 (require 2htdp/image)
 (require 2htdp/universe)
 
-; ====================================================
-; 1. CONFIGURACIÓN Y CONSTANTES
-; ====================================================
-
 ; Parámetros de la Ventana
 (define BIG-BANG-WIDTH 950)
 (define BIG-BANG-HEIGHT 650)
