@@ -1,0 +1,32 @@
+#lang racket
+; Plan C: Usamos ambas librerías, pero cargamos con la función más robusta.
+
+(require 2htdp/image)    ; Mantiene 'scale/xy'
+(require racket/gui/image) ; <--- Carga 'read-image'
+(require 2htdp/universe) 
+
+(define WIDTH 950)
+(define HEIGHT 650)
+(define WINDOW-TITLE "Inspector Blindson - Sólo Imagen (Plan C)")
+
+(define IMAGE-FILE-PATH 
+  "WhatsApp Image 2025-11-28 at 09.16.20.jpeg") 
+
+; PASO 1: Cargar la imagen con read-image
+(define RAW-IMAGE 
+  (read-image IMAGE-FILE-PATH))
+
+; PASO 2: Redimensionar la imagen
+(define MENU-IMAGE 
+  ; Si la carga fue exitosa, escalamos con la función conocida 'scale/xy'
+  (if (image? RAW-IMAGE)
+      (scale/xy RAW-IMAGE (/ WIDTH 950) (/ HEIGHT 650))
+      (text "ERROR: Archivo no encontrado. El nombre es CRÍTICO." 20 "red")))
+
+(big-bang MENU-IMAGE
+  [name WINDOW-TITLE]
+  [to-draw (lambda (img) img)] 
+  [on-tick (lambda (img) img) 1/30] 
+  [on-key (lambda (img key) img)] 
+  [stop-when false] 
+)

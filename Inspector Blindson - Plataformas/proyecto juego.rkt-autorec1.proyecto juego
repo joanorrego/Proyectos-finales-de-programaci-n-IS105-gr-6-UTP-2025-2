@@ -1,0 +1,140 @@
+#lang racket
+; Usamos 2htdp/image para dibujar y 2htdp/universe para el motor de juego.
+(require 2htdp/image)
+(require 2htdp/universe)
+
+; ====================================================
+; 1. CONFIGURACIÓN Y CONSTANTES
+; ====================================================
+
+; Define el tamaño de la ventana. Racket usa estas constantes para el tamaño del big-bang.
+(define BIG-BANG-WIDTH 950)
+(define BIG-BANG-HEIGHT 650)
+
+; Define la RUTA del archivo de imagen
+; ¡IMPORTANTE! Hemos dejado el nombre de archivo que coincidía con tu carpeta.
+(define IMAGEN-FONDO-PATH 
+  "menu-convertido-a-950x650.jpeg") 
+
+; --- Coordenadas y Dimensiones de Botones ---
+
+; Botón 'Play' (En el menú)
+(define PLAY-BUTTON-X 475) 
+(define PLAY-BUTTON-Y 550) 
+(define BUTTON-WIDTH 200)
+(define BUTTON-HEIGHT 60)
+
+; Botón 'Regresar' (En el juego)
+(define RETURN-BUTTON-X 800)
+(define RETURN-BUTTON-Y 50) 
+(define RETURN-BUTTON-W 100)
+(define RETURN-BUTTON-H 40)
+
+; ====================================================
+; 2. DEFINICIÓN DEL MUNDO
+; ====================================================
+
+; 'scene' guarda el estado: 'menu', 'jugando', etc.
+(define-struct world (scene)) 
+
+; ====================================================
+; 3. CREACIÓN DE GRÁFICOS
+; ====================================================
+
+; A. Cargar el Fondo (SIN ESCALADO)
+; Esta línea ahora usa el nombre de archivo que tienes en tu carpeta.
+(define FONDO-MENU
+  (bitmap/file IMAGEN-FONDO-PATH))
+
+; B. El Fondo de la Zona de Juego (Placeholder)
+(define FONDO-JUEGO
+  (empty-scene BIG-BANG-WIDTH BIG-BANG-HEIGHT "darkgreen"))
+
+; C. Creación del Botón PLAY
+(define PLAY-TEXT
+  (text "PLAY" 30 "white"))
+(define PLAY-BACKGROUND
+  (rectangle BUTTON-WIDTH BUTTON-HEIGHT "solid" "blue"))
+(define PLAY-BUTTON
+  (overlay PLAY-TEXT PLAY-BACKGROUND))
+
+; D. Creación del Botón REGRESAR
+(define RETURN-TEXT
+  (text "MENÚ" 20 "black"))
+(define RETURN-BACKGROUND
+  (rectangle RETURN-BUTTON-W RETURN-BUTTON-H "solid" "red"))
+(define RETURN-BUTTON
+  (overlay RETURN-TEXT RETURN-BACKGROUND))
+
+; ====================================================
+; 4. FUNCIONES PRINCIPALES
+; ====================================================
+
+; Función auxiliar: Detecta si las coordenadas (click-x, click-y) caen en el botón
+(define (es-click-en-boton? click-x click-y boton-x boton-y boton-w boton-h)
+  (and (<= (- boton-x (/ boton-w 2)) click-x (+ boton-x (/ boton-w 2)))
+       (<= (- boton-y (/ boton-h 2)) click-y (+ boton-y (/ boton-h 2)))))
+
+; A. Función de DIBUJO (to-draw)
+(define (dibujar mundo)
+  (cond
+    ; ESCENA 1: MENÚ
+    [(symbol=? (world-scene mundo) 'menu)
+     ; Coloca el FONDO-MENU y el PLAY-BUTTON
+     (place-image FONDO-MENU 
+                  (/ BIG-BANG-WIDTH 2) 
+                  (/ BIG-BANG-HEIGHT 2) 
+                  (place-image PLAY-BUTTON 
+                               PLAY-BUTTON-X 
+                               PLAY-BUTTON-Y 
+                               (empty-scene BIG-BANG-WIDTH BIG-BANG-HEIGHT)))]
+    
+    ; ESCENA 2: JUGANDO
+    [(symbol=? (world-scene mundo) 'jugando)
+     ; Dibuja el fondo de juego con el botón de regreso
+     (place-image RETURN-BUTTON
+                  RETURN-BUTTON-X
+                  RETURN-BUTTON-Y
+                  FONDO-JUEGO)]
+    
+    [else (text "Error de Estado" 30 "red")]))
+
+
+; B. Función de CLIC (on-mouse)
+(define (manejar-click mundo x y evento)
+  (if (mouse=? evento "button-down")
+      (cond
+        ; Lógica del Clic en el MENÚ
+        [(symbol=? (world-scene mundo) 'menu)
+         (if (es-click-en-boton? x y PLAY-BUTTON-X PLAY-BUTTON-Y BUTTON-WIDTH BUTTON-HEIGHT)
+             (make-world 'jugando) 
+             mundo)]
+        
+        ; Lógica del Clic JUGANDO
+        [(symbol=? (world-scene mundo) 'jugando)
+         (if (es-click-en-boton? x y RETURN-BUTTON-X RETURN-BUTTON-Y RETURN-BUTTON-W RETURN-BUTTON-H)
+             (make-world 'menu) 
+             mundo)]
+        
+        [else mundo])
+      
+      mundo))
+
+
+; ====================================================
+; 5. EL MOTOR DEL JUEGO (BIG-BANG)
+; ====================================================
+
+; El estado inicial: el juego comienza en la escena 'menu'
+(define MUNDO-INICIAL
+  (make-world 'menu))
+
+; Arranca el motor!
+(big-bang MUNDO-INICIAL
+  [name "Inspector Blindson - Menu"]
+  [to-draw dibujar]          ; Le dice cómo dibujar
+  [on-mouse manejar-click]   ; Le dice cómo reaccionar al clic
+  ; CORRECCIÓN: La función stop-when debe ser una función (lambda).
+  ; Esta función siempre devuelve #false, asegurando que el juego nunca se detenga.
+  [stop-when (lambda (mundo) #false)] 
+)

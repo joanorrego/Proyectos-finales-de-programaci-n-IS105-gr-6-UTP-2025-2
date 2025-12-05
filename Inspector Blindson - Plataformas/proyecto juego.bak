@@ -1,0 +1,668 @@
+#lang racket
+; Racket Game: Inspector Blindson - Juego de Plataformas con Colisiones Dinámicas
+; Implementa un menú, selección de nivel y física básica de un juego de plataformas
+; con gravedad, salto y una plataforma móvil (Cuadro 1).
+; Basado en 2htdp/image para dibujar y 2htdp/universe para el motor de juego.
+
+(require 2htdp/image)
+(require 2htdp/universe)
+
+; ====================================================
+; 1. CONFIGURACIÓN Y CONSTANTES
+; ====================================================
+
+; Parámetros de la Ventana
+(define BIG-BANG-WIDTH 950)
+(define BIG-BANG-HEIGHT 650)
+
+; Parámetros de FÍSICA y JUEGO
+(define JUGADOR-VELOCIDAD 15)
+(define JUMP-STRENGTH -18)       ; Fuerza inicial del salto (Negativo para ir hacia arriba)
+(define GRAVITY 1.5)             ; Aceleración de la gravedad (caída)
+(define TICK-RATE 1/30)          ; Tasa de actualización: 30 veces por segundo
+(define FALL-MARGIN 10)          ; Margen extra (en píxeles) para no caerse del borde.
+
+; Parámetros del Cuadro Móvil 1 (Plataforma Morada)
+(define CUADRO-1-SPEED 2)
+(define CUADRO-1-WIDTH 150)      ; Ancho de la plataforma C1
+(define CUADRO-1-HEIGHT 200)     ; Alto de la plataforma C1
+(define CUADRO-1-Y-MIN 150)      ; El punto Y (TOP) más alto de C1
+(define CUADRO-1-Y-MAX 310)      ; El punto Y (TOP) más bajo de C1
+
+; RUTA del Fondo (Usando un color de fondo ya que la imagen no está disponible)
+(define IMAGEN-FONDO-PATH "menu-convertido-a-950x650.jpeg")
+
+; --- Botones de Menú Principal (Dimensiones y Posiciones) ---
+(define BUTTON-WIDTH 200)
+(define BUTTON-HEIGHT 60)
+(define PLAY-BUTTON-X 475)
+(define PLAY-BUTTON-Y 550)
+(define RETURN-BUTTON-W 100)
+(define RETURN-BUTTON-H 40)
+(define RETURN-BUTTON-X 890)
+(define RETURN-BUTTON-Y 30)
+(define NIVEL-BUTTON-W 180)
+(define NIVEL-BUTTON-H 120)
+(define NIVEL-Y 325)
+(define NIVEL-1-X 237)
+(define NIVEL-2-X 475)
+(define NIVEL-3-X 712)
+
+; =========================================================================
+; *** PARÁMETROS DEL JUGADOR ***
+; =========================================================================
+(define JUGADOR-WIDTH 30)
+(define JUGADOR-HEIGHT 50)
+; =========================================================================
+
+; --- CONSTANTES DERIVADAS ---
+(define JUGADOR-HALF-WIDTH (/ JUGADOR-WIDTH 2))
+(define JUGADOR-HALF-HEIGHT (/ JUGADOR-HEIGHT 2))
+
+; --- CONSTANTES DE LÍMITES Y SUELOS ---
+(define JUGADOR-Y-SUELO 545) ; Suelo inferior de la ventana
+
+; Límites de Paredes Exteriores
+(define PARED-IZQ-X 50)
+(define PARED-DER-X 900)
+(define LIMITE-IZQ-CENTRO (+ PARED-IZQ-X JUGADOR-HALF-WIDTH))
+(define LIMITE-DER-CENTRO (- PARED-DER-X JUGADOR-HALF-WIDTH))
+
+; --- CONSTANTES DE LA PLATAFORMA 2 (PISO GRANDE - Fijo) ---
+(define PLATAFORMA-2-TOP 510) ; Borde superior de P2
+(define PLATAFORMA-2-HEIGHT 155)
+(define PLATAFORMA-BOTTOM (+ PLATAFORMA-2-TOP PLATAFORMA-2-HEIGHT)) ; Borde inferior de P2
+(define PISO-2-Y (- PLATAFORMA-2-TOP JUGADOR-HALF-HEIGHT)) ; Y central del jugador cuando está en P2
+(define PISO-2-WIDTH 590)
+(define PISO-2-X-CENTER 475)
+(define PISO-2-X-START (- PISO-2-X-CENTER (/ PISO-2-WIDTH 2)))
+(define PISO-2-X-END (+ PISO-2-X-CENTER (/ PISO-2-WIDTH 2)))
+(define PISO-2-VISUAL-Y (+ PLATAFORMA-2-TOP (/ PLATAFORMA-2-HEIGHT 2)))
+(define PISO-2-X-MIN-CENTER (+ PISO-2-X-START JUGADOR-HALF-WIDTH))
+(define PISO-2-X-MAX-CENTER (- PISO-2-X-END JUGADOR-HALF-WIDTH))
+
+; --- CONSTANTES DEL CUADRO MÓVIL 1 (Plataforma Morada) ---
+(define CUADRO-1-X-CENTER 275)
+(define CUADRO-1-X-START (- CUADRO-1-X-CENTER (/ CUADRO-1-WIDTH 2))) ; 200
+(define CUADRO-1-X-END (+ CUADRO-1-X-CENTER (/ CUADRO-1-WIDTH 2)))   ; 350
+(define CUADRO-1-X-MIN-CENTER (+ CUADRO-1-X-START JUGADOR-HALF-WIDTH)) ; 215
+(define CUADRO-1-X-MAX-CENTER (- CUADRO-1-X-END JUGADOR-HALF-WIDTH))   ; 335
+
+; Rango horizontal seguro (sin caerse) para CUADRO 1 (con margen)
+(define CUADRO-1-SAFE-X-MIN (- CUADRO-1-X-MIN-CENTER FALL-MARGIN))
+(define CUADRO-1-SAFE-X-MAX (+ CUADRO-1-X-MAX-CENTER FALL-MARGIN))
+
+; Función: ¿Está el jugador horizontalmente sobre C1 (rango SÓLIDO)?
+(define (esta-en-cuadro-1-rango? jugador-x)
+  (and (>= jugador-x CUADRO-1-X-MIN-CENTER)
+       (<= jugador-x CUADRO-1-X-MAX-CENTER)))
+
+; Función: ¿Está el jugador horizontalmente sobre C1 (rango con MARGEN para no caerse)?
+(define (esta-en-cuadro-1-rango-con-margen? jugador-x)
+  (and (>= jugador-x CUADRO-1-SAFE-X-MIN)
+       (<= jugador-x CUADRO-1-SAFE-X-MAX)))
+
+; --- CONSTANTES DE LAS PAREDES DE BLOQUEO PERMANENTES (Paredes 1 y 2 - Fijas) ---
+(define PARED-BLOQUEO-WIDTH 10)
+(define PARED-BLOQUEO-HALF-WIDTH (/ PARED-BLOQUEO-WIDTH 2))
+(define PARED-BLOQUEO-HEIGHT JUGADOR-HEIGHT)
+(define PARED-BLOQUEO-Y-CENTER JUGADOR-Y-SUELO) ; Se dibujan sobre el suelo principal
+(define PARED-BLOQUEO-1-X 200)
+(define PARED-BLOQUEO-2-X 750)
+; Rangos de X para colisionar con Pared 1 y 2
+(define PARED-1-BLOQUEO-MIN-X (- PARED-BLOQUEO-1-X PARED-BLOQUEO-HALF-WIDTH JUGADOR-HALF-WIDTH))
+(define PARED-1-BLOQUEO-MAX-X (+ PARED-BLOQUEO-1-X PARED-BLOQUEO-HALF-WIDTH JUGADOR-HALF-WIDTH))
+(define PARED-2-BLOQUEO-MIN-X (- PARED-BLOQUEO-2-X PARED-BLOQUEO-HALF-WIDTH JUGADOR-HALF-WIDTH))
+(define PARED-2-BLOQUEO-MAX-X (+ PARED-BLOQUEO-2-X PARED-BLOQUEO-HALF-WIDTH JUGADOR-HALF-WIDTH))
+; Rango de Y donde las Paredes 1 y 2 bloquean al jugador
+(define PARED-BLOQUEO-Y-TOP (- PARED-BLOQUEO-Y-CENTER JUGADOR-HALF-HEIGHT))
+(define PARED-BLOQUEO-Y-BOTTOM (+ PARED-BLOQUEO-Y-CENTER JUGADOR-HALF-HEIGHT))
+
+; Comprueba si el jugador está en el rango vertical de las Paredes 1 y 2 (FIJAS)
+(define (is-in-block-wall-y-range? current-y)
+  (and (>= current-y PARED-BLOQUEO-Y-TOP)
+       (<= current-y PARED-BLOQUEO-Y-BOTTOM)))
+
+; --- PAREDES LATERALES DE CUADRO 1 (Paredes 3 y 4 - MÓVILES) ---
+(define C1-BLOQUEO-HEIGHT CUADRO-1-HEIGHT) ; 200 de alto
+
+; Coordenadas X de los centros de las nuevas paredes (coinciden con los bordes de C1):
+(define PARED-BLOQUEO-3-X CUADRO-1-X-START) ; 200 (Borde izquierdo de C1)
+(define PARED-BLOQUEO-4-X CUADRO-1-X-END)    ; 350 (Borde derecho de C1)
+
+; Rangos de X para colisionar con Pared 3 y 4
+(define PARED-3-BLOQUEO-MIN-X (- PARED-BLOQUEO-3-X PARED-BLOQUEO-HALF-WIDTH JUGADOR-HALF-WIDTH))
+(define PARED-3-BLOQUEO-MAX-X (+ PARED-BLOQUEO-3-X PARED-BLOQUEO-HALF-WIDTH JUGADOR-HALF-WIDTH))
+(define PARED-4-BLOQUEO-MIN-X (- PARED-BLOQUEO-4-X PARED-BLOQUEO-HALF-WIDTH JUGADOR-HALF-WIDTH))
+(define PARED-4-BLOQUEO-MAX-X (+ PARED-BLOQUEO-4-X PARED-BLOQUEO-HALF-WIDTH JUGADOR-HALF-WIDTH))
+
+; Función: Colisión vertical DINÁMICA para las Paredes 3 y 4 (se mueven con C1)
+(define (is-in-c1-block-wall-y-range? current-y cuadro-1-y)
+  ; cuadro-1-y es el Y TOP del bloque morado
+  (define MIN-Y-CENTER (+ cuadro-1-y JUGADOR-HALF-HEIGHT)) ; Y central del jugador si su pie toca el borde inferior de la pared
+  (define MAX-Y-CENTER (- (+ cuadro-1-y CUADRO-1-HEIGHT) JUGADOR-HALF-HEIGHT)) ; Y central del jugador si su cabeza toca el borde superior de la pared
+
+  (and (>= current-y MIN-Y-CENTER)
+       (<= current-y MAX-Y-CENTER)))
+
+; ====================================================
+; 2. DEFINICIÓN DEL MUNDO
+; ====================================================
+
+; world: almacena el estado completo del juego.
+; scene: 'menu', 'seleccion-nivel', o 'jugando'
+; jugador-x, jugador-y: posición central del jugador
+; jugador-vy: velocidad vertical del jugador (V-y)
+; cuadro-1-y: posición Y (TOP) actual de C1 (Plataforma Morada)
+; cuadro-1-dy: velocidad vertical (delta Y) de C1
+(define-struct world (scene jugador-x jugador-y jugador-vy cuadro-1-y cuadro-1-dy))
+
+; ====================================================
+; 3. CREACIÓN DE GRÁFICOS
+; ====================================================
+
+; A. Cargar el Fondo (Ajustado para usar un color si no encuentra la imagen)
+(define FONDO-MENU
+  (if (file-exists? IMAGEN-FONDO-PATH)
+      (bitmap/file IMAGEN-FONDO-PATH)
+      (empty-scene BIG-BANG-WIDTH BIG-BANG-HEIGHT "darkslategray"))) ; Fondo de respaldo si la imagen no está
+
+; B. El Fondo de la Zona de Juego (Placeholder)
+(define FONDO-JUEGO
+  (empty-scene BIG-BANG-WIDTH BIG-BANG-HEIGHT "darkgreen"))
+
+; C. El Fondo de la SELECCIÓN DE NIVEL
+(define FONDO-SELECCION-NIVEL
+    (empty-scene BIG-BANG-WIDTH BIG-BANG-HEIGHT "darkblue"))
+
+; D. El Jugador (Rectángulo amarillo, el personaje)
+(define JUGADOR-IMAGEN
+  (rectangle JUGADOR-WIDTH JUGADOR-HEIGHT "solid" "yellow"))
+
+; E. Imagen de la Plataforma 2 (Piso Grande - Gris)
+(define PLATAFORMA-2-IMAGEN
+  (rectangle PISO-2-WIDTH PLATAFORMA-2-HEIGHT "solid" "gray"))
+
+; F. Imagen del Cuadro Móvil 1 (Plataforma Morada)
+(define PLATAFORMA-1-IMAGEN
+  (rectangle CUADRO-1-WIDTH CUADRO-1-HEIGHT "solid" "purple"))
+
+; G. Imagen de la Pared de Bloqueo (Vertical - Roja)
+(define PARED-BLOQUEO-IMAGEN
+  (rectangle PARED-BLOQUEO-WIDTH PARED-BLOQUEO-HEIGHT "solid" "red"))
+
+; H. Imagen de las Paredes laterales de C1 (Móviles - Naranja)
+(define C1-PARED-LATERAL-IMAGEN
+  (rectangle PARED-BLOQUEO-WIDTH C1-BLOQUEO-HEIGHT "solid" "orange"))
+
+; I. Botones del Menú
+(define PLAY-TEXT (text "JUGAR" 30 "white"))
+(define PLAY-BACKGROUND (rectangle BUTTON-WIDTH BUTTON-HEIGHT "solid" "blue"))
+(define PLAY-BUTTON (overlay PLAY-TEXT PLAY-BACKGROUND))
+
+(define RETURN-TEXT (text "MENÚ" 20 "white"))
+(define RETURN-BACKGROUND (rectangle RETURN-BUTTON-W RETURN-BUTTON-H "solid" "maroon"))
+(define RETURN-BUTTON (overlay RETURN-TEXT RETURN-BACKGROUND))
+
+; J. Botones de Nivel (Función Auxiliar)
+(define (crear-boton-nivel numero color)
+    (overlay (text (string-append "NIVEL " (number->string numero)) 30 "black")
+             (rectangle NIVEL-BUTTON-W NIVEL-BUTTON-H "solid" color)))
+
+(define NIVEL-1-BUTTON (crear-boton-nivel 1 "lightgreen"))
+(define NIVEL-2-BUTTON (crear-boton-nivel 2 "yellow"))
+(define NIVEL-3-BUTTON (crear-boton-nivel 3 "orange"))
+
+; ====================================================
+; 4. FUNCIONES PRINCIPALES Y LÓGICA
+; ====================================================
+
+; Función auxiliar: Detecta si las coordenadas caen en el botón
+(define (es-click-en-boton? click-x click-y boton-x boton-y boton-w boton-h)
+  (and (<= (- boton-x (/ boton-w 2)) click-x (+ boton-x (/ boton-w 2))) ; Verifica X
+       (<= (- boton-y (/ boton-h 2)) click-y (+ boton-y (/ boton-h 2))))) ; Verifica Y
+
+; Función: Chequeo de rango horizontal CON MARGEN (Usado para aterrizaje y caída de P2)
+(define (esta-en-rango-con-margen? jugador-x)
+  (let ([LEFT-SAFE-X (- PISO-2-X-MIN-CENTER FALL-MARGIN)]
+        [RIGHT-SAFE-X (+ PISO-2-X-MAX-CENTER FALL-MARGIN)])
+    (and (>= jugador-x LEFT-SAFE-X)
+          (<= jugador-x RIGHT-SAFE-X))))
+
+; Función: Comprueba si el movimiento horizontal choca con alguna pared de bloqueo
+(define (check-block-wall-collision? next-x current-y current-c1-y)
+  (or
+    ; Colisión con Pared 1 y 2 (Fijas, sobre suelo principal)
+    (if (is-in-block-wall-y-range? current-y)
+        (or (and (>= next-x PARED-1-BLOQUEO-MIN-X)
+                  (<= next-x PARED-1-BLOQUEO-MAX-X))
+            (and (>= next-x PARED-2-BLOQUEO-MIN-X)
+                  (<= next-x PARED-2-BLOQUEO-MAX-X)))
+        #false)
+
+    ; Colisión con Pared 3 (Izquierda de C1 - MÓVIL)
+    (if (is-in-c1-block-wall-y-range? current-y current-c1-y)
+        (and (>= next-x PARED-3-BLOQUEO-MIN-X)
+              (<= next-x PARED-3-BLOQUEO-MAX-X))
+        #false)
+
+    ; Colisión con Pared 4 (Derecha de C1 - MÓVIL)
+    (if (is-in-c1-block-wall-y-range? current-y current-c1-y)
+        (and (>= next-x PARED-4-BLOQUEO-MIN-X)
+              (<= next-x PARED-4-BLOQUEO-MAX-X))
+        #false)
+    ))
+
+; A. Función de DIBUJO (to-draw)
+(define (dibujar mundo)
+  (cond
+    ; ESCENA 1: MENÚ
+    [(symbol=? (world-scene mundo) 'menu)
+      (place-image FONDO-MENU
+                     (/ BIG-BANG-WIDTH 2)
+                     (/ BIG-BANG-HEIGHT 2)
+                     (place-image PLAY-BUTTON
+                                  PLAY-BUTTON-X
+                                  PLAY-BUTTON-Y
+                                  (empty-scene BIG-BANG-WIDTH BIG-BANG-HEIGHT)))]
+
+    ; ESCENA 2: SELECCIÓN DE NIVEL
+    [(symbol=? (world-scene mundo) 'seleccion-nivel)
+      (let ([escena-base (place-image (text "Selecciona un Nivel" 40 "white")
+                                      475 100 FONDO-SELECCION-NIVEL)])
+        (place-image NIVEL-1-BUTTON NIVEL-1-X NIVEL-Y
+                     (place-image NIVEL-2-BUTTON NIVEL-2-X NIVEL-Y
+                                  (place-image NIVEL-3-BUTTON NIVEL-3-X NIVEL-Y
+                                               escena-base))))]
+
+    ; ESCENA 3: JUGANDO
+    [(symbol=? (world-scene mundo) 'jugando)
+      (let* ([c1-y (world-cuadro-1-y mundo)]
+             ; La Y central de la plataforma móvil
+             [c1-visual-y (+ c1-y (/ CUADRO-1-HEIGHT 2))]
+             ; La Y central de las paredes laterales de C1 (Se mueve con c1-y)
+             [c1-bloqueo-y-center (+ c1-y (/ C1-BLOQUEO-HEIGHT 2))]
+
+             ; Dibuja el fondo y los botones
+             [escena-con-botones
+               (place-image RETURN-BUTTON
+                            RETURN-BUTTON-X
+                            RETURN-BUTTON-Y
+                            FONDO-JUEGO)]
+
+             ; Dibuja la Plataforma 2 (Fija)
+             [escena-con-plataforma-2
+               (place-image PLATAFORMA-2-IMAGEN
+                            PISO-2-X-CENTER
+                            PISO-2-VISUAL-Y
+                            escena-con-botones)]
+
+             ; Dibuja el Cuadro Móvil 1 (Morado)
+             [escena-con-plataforma-1
+               (place-image PLATAFORMA-1-IMAGEN
+                            CUADRO-1-X-CENTER
+                            c1-visual-y
+                            escena-con-plataforma-2)]
+
+             ; Dibuja Pared de Bloqueo 1 (X=200, abajo P2 - Fija)
+             [escena-con-pared-1
+               (place-image PARED-BLOQUEO-IMAGEN
+                            PARED-BLOQUEO-1-X
+                            PARED-BLOQUEO-Y-CENTER
+                            escena-con-plataforma-1)]
+
+             ; Dibuja Pared de Bloqueo 2 (X=750, abajo P2 - Fija)
+             [escena-con-pared-2
+               (place-image PARED-BLOQUEO-IMAGEN
+                            PARED-BLOQUEO-2-X
+                            PARED-BLOQUEO-Y-CENTER
+                            escena-con-pared-1)]
+
+             ; Dibuja Pared de Bloqueo 3 (Izquierda de C1, X=200 - MÓVIL)
+             [escena-con-pared-3
+               (place-image C1-PARED-LATERAL-IMAGEN
+                            PARED-BLOQUEO-3-X
+                            c1-bloqueo-y-center
+                            escena-con-pared-2)]
+
+             ; Dibuja Pared de Bloqueo 4 (Derecha de C1, X=350 - MÓVIL)
+             [escena-con-pared-4
+               (place-image C1-PARED-LATERAL-IMAGEN
+                            PARED-BLOQUEO-4-X
+                            c1-bloqueo-y-center
+                            escena-con-pared-3)])
+
+        ; Dibuja al jugador (Cuadrado amarillo)
+        (place-image JUGADOR-IMAGEN
+                      (world-jugador-x mundo)
+                      (world-jugador-y mundo)
+                      escena-con-pared-4))]
+
+    [else (text "Error de Estado" 30 "red")]))
+
+
+; B. Función de CLIC (on-mouse)
+(define (manejar-click mundo x y evento)
+  (if (mouse=? evento "button-down")
+      (cond
+        ; LÓGICA DE NAVEGACIÓN ENTRE ESCENAS
+        [(symbol=? (world-scene mundo) 'menu)
+          (if (es-click-en-boton? x y PLAY-BUTTON-X PLAY-BUTTON-Y BUTTON-WIDTH BUTTON-HEIGHT)
+              ; TRANSICIÓN: MENU -> SELECCION DE NIVEL
+              (make-world 'seleccion-nivel 0 0 0 0 0)
+              mundo)]
+
+        [(symbol=? (world-scene mundo) 'seleccion-nivel)
+          (cond
+            ; Clic en NIVEL 1: Carga el juego
+            [(es-click-en-boton? x y NIVEL-1-X NIVEL-Y NIVEL-BUTTON-W NIVEL-BUTTON-H)
+              ; TRANSICIÓN: SELECCION -> JUGANDO
+              ; C1 empieza en CUADRO-1-Y-MIN (150) y bajando (CUADRO-1-SPEED = 2)
+              (make-world 'jugando 100 JUGADOR-Y-SUELO 0 CUADRO-1-Y-MIN CUADRO-1-SPEED)]
+
+            ; Clic en NIVEL 2 y 3: Muestra mensaje
+            [(or (es-click-en-boton? x y NIVEL-2-X NIVEL-Y NIVEL-BUTTON-W NIVEL-BUTTON-H)
+                 (es-click-en-boton? x y NIVEL-3-X NIVEL-Y NIVEL-BUTTON-W NIVEL-BUTTON-H))
+              (displayln "Nivel Próximamente")
+              mundo]
+
+            [else mundo])]
+
+        [(symbol=? (world-scene mundo) 'jugando)
+          (if (es-click-en-boton? x y RETURN-BUTTON-X RETURN-BUTTON-Y RETURN-BUTTON-W RETURN-BUTTON-H)
+              ; TRANSICIÓN: JUGANDO -> MENU
+              (make-world 'menu 0 0 0 0 0)
+              mundo)]
+
+        [else mundo])
+
+      mundo))
+
+; C. Función de TECLADO (on-key)
+(define (manejar-tecla mundo tecla)
+  (if (symbol=? (world-scene mundo) 'jugando)
+      (let* (
+            (current-x (world-jugador-x mundo))
+            (current-y (world-jugador-y mundo))
+            (current-vy (world-jugador-vy mundo))
+            (current-c1-y (world-cuadro-1-y mundo)) ; Y actual de Cuadro 1
+
+            ; Y central del jugador si está en el Cuadro 1 (usado para el estado de salto)
+            (piso-cuadro-1-y (- current-c1-y JUGADOR-HALF-HEIGHT))
+
+            ; Puede saltar si está en cualquier superficie donde VY=0
+            (can-jump? (or (>= current-y JUGADOR-Y-SUELO) ; En suelo principal
+                           (= current-y PISO-2-Y)          ; En piso 2
+                           (= current-y piso-cuadro-1-y))) ; En cuadro 1
+
+            (next-x (cond
+                      [(key=? tecla "left") (- current-x JUGADOR-VELOCIDAD)]
+                      [(key=? tecla "right") (+ current-x JUGADOR-VELOCIDAD)]
+                      [else current-x]))
+
+            ; ----------------------------------------------------
+            ; 2. COLISIÓN HORIZONTAL
+            ; ----------------------------------------------------
+
+            ; Colisión con paredes exteriores (50 y 900)
+            (exterior-collision?
+              (or (< next-x LIMITE-IZQ-CENTRO)
+                  (> next-x LIMITE-DER-CENTRO)))
+
+            ; Colisión con Paredes 1, 2, 3 y 4
+            (bloqueo-collision?
+              (check-block-wall-collision? next-x current-y current-c1-y))
+
+            ; Rango vertical de C1: TOP y BOTTOM del bloque morado
+            (c1-top current-c1-y)
+            (c1-bottom (+ current-c1-y CUADRO-1-HEIGHT))
+            ; Rango vertical del jugador: TOP y BOTTOM del bloque amarillo
+            (player-top (- current-y JUGADOR-HALF-HEIGHT))
+            (player-bottom (+ current-y JUGADOR-HALF-HEIGHT))
+
+            ; Colisión en Y: ¿El jugador está a la misma altura que C1?
+            (is-in-cuadro-1-y-range?
+              (and (< player-top c1-bottom)
+                   (> player-bottom c1-top)))
+
+            ; Colisión Lateral con el CUERPO SÓLIDO de Cuadro 1
+            (c1-lateral-collision?
+              ; Bloquea si la Y coincide Y el centro del jugador entra en el rango horizontal "sólido" de C1
+              (if is-in-cuadro-1-y-range?
+                  (and (>= next-x CUADRO-1-X-MIN-CENTER)
+                       (<= next-x CUADRO-1-X-MAX-CENTER))
+                  #false))
+
+            ; Colisión lateral general (paredes exteriores, paredes de bloqueo o cuerpo de C1)
+            (lateral-collision?
+              (or exterior-collision?
+                  bloqueo-collision?
+                  c1-lateral-collision?))
+              )
+
+            (cond
+              ; A. Salto ('up' o ' ')
+              [(or (key=? tecla "up") (key=? tecla " "))
+                (if can-jump?
+                    (make-world 'jugando
+                                current-x
+                                current-y
+                                JUMP-STRENGTH ; Aplica la fuerza de salto (VY negativo)
+                                (world-cuadro-1-y mundo)
+                                (world-cuadro-1-dy mundo))
+                    mundo)]
+
+              ; B. Movimiento Horizontal
+              [(or (key=? tecla "left") (key=? tecla "right"))
+                (cond
+                  [lateral-collision?
+                    mundo] ; Detiene el movimiento si hay colisión lateral
+                  [else
+                    (make-world 'jugando next-x
+                                        current-y
+                                        current-vy
+                                        (world-cuadro-1-y mundo)
+                                        (world-cuadro-1-dy mundo))])]
+
+              ; C. Cualquier otra tecla
+              [else mundo]))
+
+      mundo))
+
+; D. Función de TICKS (on-tick) - Lógica de movimiento y gravedad
+(define (manejar-tick mundo)
+  (if (symbol=? (world-scene mundo) 'jugando)
+      (let* (
+        (jugador-x (world-jugador-x mundo))
+        (old-y (world-jugador-y mundo))
+        (current-vy (world-jugador-vy mundo))
+        (cuadro-1-y (world-cuadro-1-y mundo))
+        (cuadro-1-dy (world-cuadro-1-dy mundo))
+
+        ; ----------------------------------------------------
+        ; 1. MOVIMIENTO DE PLATAFORMA 1 (Cuadro Móvil)
+        ; ----------------------------------------------------
+        (next-c1-y (+ cuadro-1-y cuadro-1-dy))
+        (next-c1-dy (cond
+                      ; Si toca el techo (MIN) y va subiendo, cambia a bajar
+                      [(and (<= next-c1-y CUADRO-1-Y-MIN) (< cuadro-1-dy 0)) CUADRO-1-SPEED]
+                      ; Si toca el piso (MAX) y va bajando, cambia a subir
+                      [(and (>= next-c1-y CUADRO-1-Y-MAX) (> cuadro-1-dy 0)) (- CUADRO-1-SPEED)]
+                      [else cuadro-1-dy]))
+        (new-cuadro-1-y (+ cuadro-1-y next-c1-dy))
+        (y-change (- new-cuadro-1-y cuadro-1-y)) ; Cuánto se movió la plataforma (+/-)
+
+        ; Y del borde inferior de Cuadro 1 (el punto que choca con la cabeza del jugador)
+        (C1-BOTTOM-EDGE (+ new-cuadro-1-y CUADRO-1-HEIGHT))
+
+        ; ----------------------------------------------------
+        ; 2. AJUSTE DE POSICIÓN DEL JUGADOR (SI ESTÁ EN C1)
+        ; ----------------------------------------------------
+        (piso-cuadro-1-y (- cuadro-1-y JUGADOR-HALF-HEIGHT)) ; Y central del jugador si estaba en C1 (VIEJA)
+
+        ; Posición Y central del jugador si aterriza en C1 (FUTURA)
+        (piso-cuadro-1-y-next (- new-cuadro-1-y JUGADOR-HALF-HEIGHT))
+
+        ; Estatus de REPOSO en C1 (estaba a la Y correcta en el frame anterior)
+        (player-was-resting-on-c1?
+          (and (esta-en-cuadro-1-rango-con-margen? jugador-x) ; Usa el rango con margen
+                (= old-y piso-cuadro-1-y))) ; Y la Y del jugador coincidía con la Y del tope de C1
+
+        ; Si estaba en C1 y en reposo, mueve su Y junto con C1 antes de la física
+        (adjusted-old-y (if player-was-resting-on-c1?
+                             (+ old-y y-change)
+                             old-y))
+
+        ; ----------------------------------------------------
+        ; 3. CHEQUEO DE ESTADO DE REPOSO (VY=0)
+        ; ----------------------------------------------------
+
+        (is-resting-p1? (and (= adjusted-old-y JUGADOR-Y-SUELO) (= current-vy 0))) ; Reposo en Suelo Principal
+        (is-resting-p2? (and (= adjusted-old-y PISO-2-Y) (= current-vy 0)))       ; Reposo en Plataforma 2
+
+        ; Lógica de CAÍDA (si se sale del rango horizontal)
+        (should-start-fall-p2?
+          (and is-resting-p2?
+               (not (esta-en-rango-con-margen? jugador-x))))
+
+        (should-start-fall-c1?
+          (and player-was-resting-on-c1?
+               (not (esta-en-cuadro-1-rango-con-margen? jugador-x))))
+
+        (should-start-fall? (or should-start-fall-p2? should-start-fall-c1?))
+
+        ; La condición general para permanecer "pegado" a una superficie (VY=0)
+        (should-stay-at-rest?
+          (and (or is-resting-p1? is-resting-p2? player-was-resting-on-c1?)
+               (not should-start-fall?)))
+
+        ; Y de Reposo Forzado (para corregir el error de Piso 2 y C1)
+        (y-at-rest (cond
+                      ; Reposo en C1 (móvil) - USA LA Y FUTURA
+                      [player-was-resting-on-c1? piso-cuadro-1-y-next]
+                      ; Reposo en P2 (fijo)
+                      [is-resting-p2? PISO-2-Y]
+                      ; Reposo en P1 (suelo fijo)
+                      [is-resting-p1? JUGADOR-Y-SUELO]
+                      ; Fallback
+                      [else adjusted-old-y]))
+
+        ; ----------------------------------------------------
+        ; 4. CÁLCULO DE MOVIMIENTO Y GRAVEDAD
+        ; ----------------------------------------------------
+
+        ; Determina la VY inicial: si debe caer, la fuerza a GRAVITY. Si no, usa la VY actual.
+        (vy-initial (if should-start-fall?
+                            GRAVITY
+                            current-vy))
+
+        (nueva-vy (+ vy-initial GRAVITY)) ; Aplica la gravedad al VY actual
+        (nueva-y (+ adjusted-old-y nueva-vy)) ; Calcula la nueva Y
+
+        ; ----------------------------------------------------
+        ; 5. Lógica de COLISIÓN INFERIOR (Tope de Cabeza)
+        ; ----------------------------------------------------
+
+        ; Tope de Cabeza en Plataforma 2 (Fija)
+        (head-bump-p2?
+          (and (< current-vy 0)                            ; Va subiendo
+               (esta-en-rango-con-margen? jugador-x)        ; Horizontalmente alineado (margen)
+               (<= (- nueva-y JUGADOR-HALF-HEIGHT)          ; La cabeza choca o supera el tope (PLATAFORMA-BOTTOM)
+                   PLATAFORMA-BOTTOM)
+               (> (- adjusted-old-y JUGADOR-HALF-HEIGHT)   ; En el frame anterior estaba debajo
+                   PLATAFORMA-BOTTOM)))
+
+        ; Tope de Cabeza en Cuadro 1 (Móvil)
+        (head-bump-c1?
+          (and (< current-vy 0)                            ; Va subiendo
+               (esta-en-cuadro-1-rango? jugador-x)         ; Horizontalmente alineado (rango SÓLIDO)
+               (<= (- nueva-y JUGADOR-HALF-HEIGHT) C1-BOTTOM-EDGE) ; La cabeza choca o supera el borde inferior de C1
+               (> (- adjusted-old-y JUGADOR-HALF-HEIGHT) C1-BOTTOM-EDGE))) ; Estaba debajo en el frame anterior
+
+        (head-bump? (or head-bump-p2? head-bump-c1?))
+
+        ; ----------------------------------------------------
+        ; 6. Lógica de Aterrizaje
+        ; ----------------------------------------------------
+
+        (en-suelo-principal? (>= nueva-y JUGADOR-Y-SUELO))
+
+        (aterrizando-en-plataforma-2?
+          (and (esta-en-rango-con-margen? jugador-x)      ; Horizontalmente alineado (margen)
+               (< adjusted-old-y PISO-2-Y)                 ; Venía de arriba de P2
+               (>= nueva-y PISO-2-Y)))                    ; Aterriza en o debajo de P2
+
+        ; Aterrizando en Cuadro 1 (Móvil) - Usa la Y FUTURA de C1
+        (aterrizando-en-cuadro-1?
+          (and (esta-en-cuadro-1-rango-con-margen? jugador-x) ; Horizontalmente alineado (margen)
+               (< adjusted-old-y piso-cuadro-1-y-next)    ; Venía de arriba de C1 (posición FUTURA)
+               (>= nueva-y piso-cuadro-1-y-next)))        ; Aterriza en o debajo de C1 (posición FUTURA)
+
+        ; ----------------------------------------------------
+        ; 7. Posición Final y Velocidad Final
+        ; ----------------------------------------------------
+
+        (vy-stop? (or aterrizando-en-plataforma-2?
+                      en-suelo-principal?
+                      head-bump?
+                      aterrizando-en-cuadro-1?))
+
+        (y-final-normal (cond
+                          ; Tope de Cabeza en P2
+                          [head-bump-p2?
+                            (+ PLATAFORMA-BOTTOM JUGADOR-HALF-HEIGHT)]
+                          ; Tope de Cabeza en C1
+                          [head-bump-c1?
+                            (+ C1-BOTTOM-EDGE JUGADOR-HALF-HEIGHT)]
+                          ; Aterrizaje en C1
+                          [aterrizando-en-cuadro-1? piso-cuadro-1-y-next]
+                          ; Aterrizaje en P2
+                          [aterrizando-en-plataforma-2? PISO-2-Y]
+                          ; Aterrizaje en Suelo Principal
+                          [en-suelo-principal? JUGADOR-Y-SUELO]
+                          ; Si no choca, usa la Y calculada por la gravedad
+                          [else nueva-y]))
+
+        (vy-final-normal (if vy-stop? 0 nueva-vy))
+      )
+
+      ; Cuerpo principal del let*: Decide el resultado final
+      (cond
+        ; CASO 1: REPOSO (Aplica movimiento de C1 y fuerza VY a 0)
+        [should-stay-at-rest?
+          (make-world 'jugando
+                      jugador-x
+                      y-at-rest             ; <-- Usa la Y de reposo forzada (incluye movimiento de C1)
+                      0                     ; <-- Fuerza VY a 0
+                      new-cuadro-1-y
+                      next-c1-dy)]
+
+        ; CASO 2: MOVIMIENTO (Caída, Salto, Aterrizaje, o Choque)
+        [else
+          (make-world 'jugando
+                      jugador-x
+                      y-final-normal        ; <-- Usa la Y calculada por la física
+                      vy-final-normal
+                      new-cuadro-1-y
+                      next-c1-dy)]
+      ))
+
+      mundo))
+
+; ====================================================
+; 5. EL MOTOR DEL JUEGO (BIG-BANG)
+; ====================================================
+
+; El estado inicial
+(define MUNDO-INICIAL
+  (make-world 'menu 0 0 0 0 0))
+
+; Arranca el motor!
+(big-bang MUNDO-INICIAL
+  [name "Inspector Blindson - Plataformas"]
+  [to-draw dibujar]           ; Le dice cómo dibujar
+  [on-mouse manejar-click]    ; Le dice cómo reaccionar al clic
+  [on-key manejar-tecla]      ; Le dice cómo reaccionar a las teclas
+  [on-tick manejar-tick TICK-RATE] ; Aplica la gravedad y las colisiones
+  [stop-when (lambda (mundo) #false)]
+)
